@@ -1,0 +1,100 @@
+trigger:
+  branches:
+    include:
+    - master
+    - develop    
+    - release/*
+    - hotfix/*   
+  paths:
+    include:
+      - BACKBONE-AKS/*
+
+variables:
+- group: BackboneEducacional-VAR
+- name: RepoName
+  value: Cogna-Azure-BackboneEducacional
+- name: pathPipe
+  value: BACKBONE-AKS
+
+############################## HML ##########################################33
+stages:
+  - stage: 'planTfHML'
+    displayName: Terraform Plan HML
+    dependsOn: []
+    condition: eq(variables['Build.SourceBranch'], 'refs/heads/develop')
+    variables:
+      environment: HML
+      backend_storage: cgnbackbonetfstatehml      
+    jobs:
+      - job:
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+        - task: qetza.replacetokens.replacetokens-task.replacetokens@3
+          displayName: 'Replace tokens in **/*.tf'
+          inputs:
+            targetFiles: |
+              $(pathPipe)/*.tf
+              $(pathPipe)/*.yaml          
+            tokenPrefix: '$('
+            tokenSuffix: ')' 
+        - task: charleszipp.azure-pipelines-tasks-terraform.azure-pipelines-tasks-terraform-installer.TerraformInstaller@0
+          displayName: 'Use Terraform 0.13.5'
+          inputs:
+            terraformVersion: 0.13.5
+       
+        - bash: |
+            terraform init -backend-config=key=$(RepoName)/$(pathPipe)/terraform.tfstate -backend-config=access_key=$(cgnbackbonetfstatehml)
+          workingDirectory: '$(System.DefaultWorkingDirectory)/$(pathPipe)'
+          displayName: 'Terraform Init'    
+            
+        
+        - task: TerraformTaskV1@0
+          displayName: 'Terraform Plan'
+          inputs:
+            provider: 'azurerm'
+            command: 'plan'
+            workingDirectory: '$(System.DefaultWorkingDirectory)/$(pathPipe)'
+            commandOptions: '-no-color'
+            environmentServiceNameAzureRM: 'BACKBONE-AKS-hml-azure'
+
+        - publish: $(Build.SourcesDirectory)/$(pathPipe)
+          artifact: artifact_hml
+          displayName: Publish it as artifact
+
+  - stage: 'applyTfHML'
+    displayName: Terraform Apply HML
+    dependsOn: planTfHML
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    variables:
+      environment: HML
+      backend_storage: cgnbackbonetfstatehml
+    jobs:
+      - deployment: 
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: Aprovadores-SystemTeam
+        strategy:
+          runOnce:
+            deploy:        
+              steps:
+              - download: current
+                artifact: artifact_hml              
+              - task: charleszipp.azure-pipelines-tasks-terraform.azure-pipelines-tasks-terraform-installer.TerraformInstaller@0
+                displayName: 'Use Terraform 0.13.5'
+                inputs:
+                  terraformVersion: 0.13.5
+
+              - bash: |
+                  terraform init -backend-config=key=$(RepoName)/$(pathPipe)/terraform.tfstate -backend-config=access_key=$(cgnbackbonetfstatehml)
+                workingDirectory: '$(Pipeline.Workspace)/artifact_hml'
+                displayName: 'Terraform Init'
+
+              - task: TerraformTaskV1@0
+                displayName: 'Terraform Apply'
+                inputs:
+                  provider: 'azurerm'
+                  command: 'apply'
+                  workingDirectory: '$(Pipeline.Workspace)/artifact_hml'
+                  commandOptions: '-no-color'
+                  environmentServiceNameAzureRM: 'BACKBONE-AKS-hml-azure'
